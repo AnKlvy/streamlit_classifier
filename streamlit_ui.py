@@ -1,54 +1,127 @@
-from PIL import Image, ImageOps, ImageDraw
-from torchvision import models, transforms
+import os
 import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import models, transforms, datasets
+from torch.utils.data import DataLoader
 import streamlit as st
+from PIL import Image
 
-st.title("Классификация изображений с помощью PyTorch")
-st.write("Загрузите изображение, чтобы получить предсказания на основе ResNet.")
+st.title("Классификация изображений с помощью ResNet18")
+st.write("Загрузите изображение, чтобы получить предсказания на основе предварительно обученной модели ResNet18.")
+
+# Конфигурация
+MODEL_PATH = 'resnet18_cifar10_1.pth'
+BATCH_SIZE = 64
+NUM_EPOCHS = 5
+LEARNING_RATE = 0.003
+
+# Определим устройство: если доступен GPU, используем его, иначе - CPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def get_dataloaders():
+    transform = transforms.Compose([
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(10),
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    trainset = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
+    testset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transform)
+    trainloader = DataLoader(trainset, batch_size=BATCH_SIZE, shuffle=True)
+    testloader = DataLoader(testset, batch_size=BATCH_SIZE, shuffle=False)
+    return trainloader, testloader
+
+
+def load_model():
+    model = models.resnet18()
+    model.fc = nn.Linear(model.fc.in_features, 10)
+    model.to(device)  # Перемещаем модель на выбранное устройство (GPU/CPU)
+
+    trained = False
+    if os.path.exists(MODEL_PATH):
+        model.load_state_dict(torch.load(MODEL_PATH, weights_only=True))
+        print("Модель успешно загружена из файла.")
+        trained = True
+    else:
+        print("Файл модели не найден. Будет использоваться новая модель.")
+    return model, trained
+
+
+def train_model(model, trainloader, criterion, optimizer, num_epochs):
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        for images, labels in trainloader:
+            images, labels = images.to(device), labels.to(device)  # Перемещаем данные на устройство
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {running_loss / len(trainloader):.4f}")
+    torch.save(model.state_dict(), MODEL_PATH)
+    print("Модель сохранена в файл.")
+
+
+def evaluate_model(model, testloader):
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in testloader:
+            images, labels = images.to(device), labels.to(device)  # Перемещаем данные на устройство
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    accuracy = 100 * correct / total
+    print(f"Accuracy on test set: {accuracy:.2f}%")
+
+
+def predict_image(model, image):
+    transform = transforms.Compose([
+        transforms.Resize((32, 32)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    image = transform(image).unsqueeze(0).to(device)  # Перемещаем изображение на устройство
+    model.eval()
+    with torch.no_grad():
+        outputs = model(image)
+        _, predicted = torch.max(outputs, 1)
+    classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+    return classes[predicted.item()]
+
 
 file_up = st.file_uploader("Загрузите изображение (только JPG)", type="jpg")
-
-def add_rounded_border(image, border_size=0, corner_radius=20, border_color=None):
-    width, height = image.size
-    mask = Image.new("L", (width + 2 * border_size, height + 2 * border_size), 0)
-    draw = ImageDraw.Draw(mask)
-    draw.rounded_rectangle(
-        (0, 0, width + 2 * border_size, height + 2 * border_size),
-        radius=corner_radius,
-        fill=255
-    )
-    bordered_image = ImageOps.expand(image, border=border_size, fill=border_color)
-    rounded_image = Image.new("RGBA", bordered_image.size)
-    rounded_image.paste(bordered_image, mask=mask)
-    return rounded_image
-
-def predict(image):
-    resnet = models.resnet101(pretrained=True)
-    transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )])
-    img = Image.open(image)
-    batch_t = torch.unsqueeze(transform(img), 0)
-    resnet.eval()
-    out = resnet(batch_t)
-    with open('imagenet_classes.txt') as f:
-        classes = [line.strip() for line in f.readlines()]
-    prob = torch.nn.functional.softmax(out, dim=1)[0] * 100
-    _, indices = torch.sort(out, descending=True)
-    return [(classes[idx], prob[idx].item()) for idx in indices[0][:5]]
-
 if file_up is not None:
     image = Image.open(file_up)
-    bordered_image = add_rounded_border(image, corner_radius=60)
-    st.image(bordered_image, caption='Загруженное изображение', use_container_width=True)
+    st.image(image, caption='Загруженное изображение', use_container_width=True)
     st.write("Обрабатываю изображение...")
-    labels = predict(file_up)
-    st.write("### Результаты классификации:")
-    for i, (label, score) in enumerate(labels):
-        label_after_comma = label.split(',')[1].strip() if ',' in label else label  # Сохраняем только часть после запятой
-        st.write(f"**{i + 1}. {label_after_comma}** — вероятность: `{score:.2f}%`")
+
+    # Загрузка модели и предсказание
+    model, trained = load_model()
+
+    if not trained:
+        st.write("### Обучение модели")
+        trainloader, _ = get_dataloaders()
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
+        train_model(model, trainloader, criterion, optimizer, NUM_EPOCHS)
+    else:
+        st.write("Модель уже обучена. Пропуск этапа обучения.")
+
+    # Оценка модели
+    st.write("### Оценка точности на тестовом наборе")
+    _, testloader = get_dataloaders()
+    evaluate_model(model, testloader)
+
+    # Предсказание
+    st.write("### Предсказание для загруженного изображения")
+    label = predict_image(model, image)
+    st.write(f"Метка предсказания: **{label}**")

@@ -63,6 +63,6 @@
    ```bash
    pip install -r requirements.txt
    
-   2. Запустите streamlit:
-         ```bash
-       py -m streamlit run streamlit_ui.py
+2. Запустите streamlit:
+   ```bash
+    py -m streamlit run streamlit_ui.py
